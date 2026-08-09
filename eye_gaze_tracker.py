@@ -35,6 +35,7 @@ class EyeGazeTracker:
 
             self._gaze_valid = True
             self._last_gaze_time = time.time()
+            print((self._gaze_center_x, self._gaze_center_y, self._gaze_bounding_box))
             return (self._gaze_center_x, self._gaze_center_y, self._gaze_bounding_box)
         else:
             self._gaze_valid = False

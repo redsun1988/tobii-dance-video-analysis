@@ -1,7 +1,7 @@
 import cv2
 import uuid
 import numpy as np
-import face_recognition
+# import face_recognition
 from ultralytics import YOLO
 from config import AppConfig
 
@@ -56,14 +56,17 @@ class PoseEstimator:
                 box = boxes[i]  # [x1, y1, x2, y2]
                 keypoints = keypoints_data[i]  # [17 keypoints, each with (x, y, conf)]
                 
-                # Calculate bounding boxes for body parts
-                frame_height, frame_width = frame.shape[:2]
+                # Calculate rotated boxes for body parts (follow the actual
+                # orientation of the limb/torso instead of an axis-aligned box)
                 body_parts_boxes = {}
                 for part_name, kp_indices in self.body_part_keypoints.items():
-                    bbox = self._calculate_bounding_box(keypoints, kp_indices, frame_width, frame_height)
-                    # rotated_bbox = self._get_rotated_box(frame, self._get_central_line(keypoints))
-                    rotated_bbox = None
-                    body_parts_boxes[part_name] = (bbox, rotated_bbox)
+                    rotated_box = self._calculate_rotated_box(
+                        keypoints, kp_indices, app_config.MIN_POSE_CONFIDENCE
+                    )
+                    # rotated_box is either None or a tuple (a, b, width) where
+                    # a, b are the endpoints of the box's central axis and
+                    # width is the box width perpendicular to that axis.
+                    body_parts_boxes[part_name] = rotated_box
 
                 face_id = self.get_face_id(frame, box)
                 emotion = self.get_emotion(frame, box)
@@ -83,88 +86,94 @@ class PoseEstimator:
         return people_data
     
     @staticmethod
-    def _calculate_bounding_box(keypoints, indices, frame_width, frame_height, min_conf=app_config.MIN_POSE_CONFIDENCE):
-        """Calculates a bounding box around specified keypoints."""
-        x_coords = []
-        y_coords = []
+    def _calculate_rotated_box(keypoints, indices, min_conf, padding=10):
+        """
+        Builds a rotated rectangle that closely follows the position and
+        orientation of a body part, based on its keypoints.
+
+        Returns a tuple (a, b, width) where:
+            a, b   - endpoints of the rectangle's central axis (its "length"
+                     direction, e.g. shoulder -> wrist for an arm)
+            width  - rectangle width, measured perpendicular to the a-b axis
+
+        This representation matches what
+        JavelinThrower.is_point_in_rotated_rect(point, a, b, width) expects.
+
+        Returns None if there aren't enough confident keypoints to build a box.
+        """
+        pts = []
         for idx in indices:
             if idx < len(keypoints) and keypoints[idx][2] > min_conf:  # Check confidence
-                x_coords.append(keypoints[idx][0])
-                y_coords.append(keypoints[idx][1])
-        
-        if not x_coords or not y_coords:
-            return None  # No confident keypoints to form a box
-        
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        
-        # Add a small padding and ensure coordinates are within frame boundaries
-        padding = 10  # pixels
-        x1 = max(0, int(min_x) - padding)
-        y1 = max(0, int(min_y) - padding)
-        x2 = min(frame_width - 1, int(max_x) + padding)
-        y2 = min(frame_height - 1, int(max_y) + padding)
-        
-        return (x1, y1, x2, y2)
-    
-    @staticmethod
-    def _get_central_line(keypoints):
-        """Calculate a central line from two given keypoints."""
-        
-        # x1 = (keypoints[0][0] + keypoints[1][0]) / 2
-        # y1 = (keypoints[0][1] + keypoints[1][1]) / 2
+                pts.append([keypoints[idx][0], keypoints[idx][1]])
 
-        # x2 = (keypoints[2][0] + keypoints[3][0]) / 2
-        # y2 = (keypoints[2][1] + keypoints[3][1]) / 2
-        x1, x2 = keypoints[0][0], keypoints[1][0]
-        y1, y2 = keypoints[2][1], keypoints[3][1]
-        central_line = ((x1, y1), (x2, y2))
-        return central_line
-    
-    @staticmethod
-    def _get_rotated_box(frame, central_line):
-        """Calculate a rotated bounding box from the central line."""
-        
-        height, width = frame.shape[:2]
-        distance = np.sqrt((central_line[1][0] - central_line[0][0])**2 + (central_line[1][1] - central_line[0][1])**2)
-        
-        # Generate a box with the same size as the central line but rotated
-        box = cv2.boxPoints(((central_line[0], central_line[1], distance/4), 0))
-        
-        # Ensure the bounding box is within the frame boundaries
-        for i in range(4):
-            if box[i][0] < 0: box[i][0] = 0
-            elif box[i][0] > width - 1: box[i][0] = width - 1
-            
-            if box[i][1] < 0: box[i][1] = 0
-            elif box[i][1] > height - 1: box[i][1] = height - 1
-        
-        return np.int0(box)
+        if len(pts) == 0:
+            return None  # No confident keypoints to form a box
+
+        if len(pts) == 1:
+            # Only one reliable point - build a small square-ish box around it
+            x, y = pts[0]
+            a = (x - padding, y)
+            b = (x + padding, y)
+            return (a, b, float(padding * 2))
+
+        pts_arr = np.array(pts, dtype=np.float32)
+
+        # minAreaRect finds the minimum-area rectangle enclosing the points,
+        # at whatever angle best fits them - this is what gives us rotation
+        # that follows the limb/torso orientation instead of axis alignment.
+        rect = cv2.minAreaRect(pts_arr)  # ((cx, cy), (w, h), angle)
+        box_points = cv2.boxPoints(rect)  # 4 corners of the rectangle
+
+        edge1 = np.linalg.norm(box_points[1] - box_points[0])
+        edge2 = np.linalg.norm(box_points[2] - box_points[1])
+
+        # Use the longer edge as the central axis (a-b), the shorter one
+        # becomes the rectangle's width
+        if edge1 >= edge2:
+            a = (box_points[0] + box_points[3]) / 2.0
+            b = (box_points[1] + box_points[2]) / 2.0
+            width = edge2
+        else:
+            a = (box_points[0] + box_points[1]) / 2.0
+            b = (box_points[3] + box_points[2]) / 2.0
+            width = edge1
+
+        # Small padding along the axis and across the width, similar to the
+        # padding previously applied to the axis-aligned bounding box
+        direction = b - a
+        length = np.linalg.norm(direction)
+        if length > 1e-6:
+            unit = direction / length
+            a = a - unit * padding
+            b = b + unit * padding
+        width += padding * 2
+
+        return (tuple(a), tuple(b), float(width))
     
     def get_face_id(self, frame, box):
         x1, y1, x2, y2 = box
         cropped_frame = frame[y1:y2, x1:x2]
         
-        # Use the face_recognition library to find faces in the cropped frame
-        face_locations = face_recognition.face_locations(cropped_frame)
+        # # Use the face_recognition library to find faces in the cropped frame
+        # face_locations = face_recognition.face_locations(cropped_frame)
         
-        if len(face_locations) > 0:  # If a face is found
-            face_encoding = face_recognition.face_encodings(cropped_frame, known_face_locations=face_locations)[0]
+        # if len(face_locations) > 0:  # If a face is found
+        #     face_encoding = face_recognition.face_encodings(cropped_frame, known_face_locations=face_locations)[0]
             
-            # Check if this face encoding is already in our list of known faces
-            for face, id in self.known_faces.items():
-                match = face_recognition.compare_faces([face], face_encoding)
+        #     # Check if this face encoding is already in our list of known faces
+        #     for face, id in self.known_faces.items():
+        #         match = face_recognition.compare_faces([face], face_encoding)
                 
-                if match[0]:  # If it's a known face
-                    return id  # Return the corresponding ID
+        #         if match[0]:  # If it's a known face
+        #             return id  # Return the corresponding ID
             
-            # If it's a new face, assign it a new unique ID and add to the list of known faces
-            new_id = uuid.uuid4()
-            self.known_faces[face_encoding] = new_id
-            return new_id
+        #     # If it's a new face, assign it a new unique ID and add to the list of known faces
+        #     new_id = uuid.uuid4()
+        #     self.known_faces[face_encoding] = new_id
+        #     return new_id
         
-        else:  # If no face is found in the cropped frame, return None
-            return None
+        # else:  # If no face is found in the cropped frame, return None
+        return None
         
     def get_age(self, frame, box): return None  # TODO: implement this method
     def get_gender(self, frame, box): return None  # TODO: implement this method

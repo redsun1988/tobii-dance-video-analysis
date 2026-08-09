@@ -18,106 +18,67 @@ class GazeAnalyzer:
     def set_frame_rate(self, fps):
         self.frame_rate = fps
 
-    # def analyze_frame(self, frame_idx, people_data, gaze_coords):
-    #     """
-    #     Analyzes gaze position against detected people and their body parts.
-    #     Records gaze events and updates statistics.
-    #     """
-    #     self.total_frames = max(self.total_frames, frame_idx + 1)
-    #     gazed_person_id = None
-    #     gazed_body_part_name = None
-
-    #     for person in people_data:
-    #         # Check if gaze is on the person's overall bounding box
-    #         if JavelinThrower.point_in_box(gaze_coords, person['box']):
-    #             gazed_person_id = person['id']
-
-    #             # Check specific body parts
-    #             for part_name, (part_box, rotated_part_box) in person['body_parts'].items():
-    #                 if JavelinThrower.point_in_box(gaze_coords, part_box):
-    #                     gazed_body_part_name = part_name
-    #                     break # Prioritize specific part over general person box
-
-    #         if gazed_person_id is not None and gazed_body_part_name is not None:
-    #             break # Gaze found on a person and their part
-
-    #     # Record gaze event
-    #     self.gaze_history[frame_idx].append({
-    #         'gazed_person_id': gazed_person_id,
-    #         'gazed_body_part': gazed_body_part_name,
-    #         'gaze_coords': gaze_coords
-    #     })
-
-    #     # Update durations (assuming each frame represents 1/frame_rate seconds)
-    #     time_per_frame = 1.0 / self.frame_rate
-    #     if gazed_person_id is not None:
-    #         self.gaze_duration_per_person[gazed_person_id] += time_per_frame
-    #     if gazed_body_part_name is not None:
-    #         self.gaze_duration_per_part[gazed_body_part_name] += time_per_frame
-
-    #     # Update transition matrix
-    #     current_gazed_item = (gazed_person_id, gazed_body_part_name)
-    #     if self._last_gazed_person_part and self._last_gazed_person_part != current_gazed_item:
-    #         from_person_id, from_part_name = self._last_gazed_person_part
-    #         to_person_id, to_part_name = current_gazed_item
-
-    #         # Record transitions between parts if they are on the same person or to a different person
-    #         if from_person_id == to_person_id and from_part_name is not None and to_part_name is not None:
-    #             self.gaze_transitions[from_part_name][to_part_name] += 1
-    #         elif from_person_id != to_person_id:
-    #             # Transition to a different person
-    #             self.gaze_transitions[f"Person {from_person_id}"][f"Person {to_person_id}"] += 1
-    #         elif from_part_name is None and to_part_name is not None:
-    #             # Transition from no gaze to a specific part
-    #             self.gaze_transitions["None"][to_part_name] += 1
-    #         elif from_part_name is not None and to_part_name is None:
-    #             # Transition from a specific part to no gaze
-    #             self.gaze_transitions[from_part_name]["None"] += 1
-
-    #     self._last_gazed_person_part = current_gazed_item
-
-    def process_frame(self, frame):
+    def analyze_frame(self, frame_idx, people_data, gaze_coords):
         """
-        Processes a single video frame to detect and track human poses.
-        Returns a list of detected people with their IDs, bounding boxes, and keypoints.
+        Analyzes gaze position against detected people and their body parts.
+        Records gaze events and updates statistics.
         """
-        results = self.model.track(frame, persist=True, classes=0, conf=app_config.MIN_POSE_CONFIDENCE, verbose=False)[0]
-        people_data = []
+        self.total_frames = max(self.total_frames, frame_idx + 1)
+        gazed_person_id = None
+        gazed_body_part_name = None
 
-        if results.boxes and results.boxes.id is not None and results.keypoints:
-            boxes = results.boxes.xyxy.cpu().numpy().astype(int)
-            track_ids = results.boxes.id.int().cpu().tolist()
-            keypoints_data = results.keypoints.data.cpu().numpy()
+        for person in people_data:
+            # Check if gaze is on the person's overall bounding box
+            if JavelinThrower.point_in_box(gaze_coords, person['box']):
+                gazed_person_id = person['id']
 
-            for i in range(len(track_ids)):
-                person_id = track_ids[i]
-                box = boxes[i]
-                keypoints = keypoints_data[i]
+                # Check specific body parts using their rotated rectangles
+                # (each body part is (a, b, width) or None)
+                for part_name, rotated_box in person['body_parts'].items():
+                    if rotated_box is None:
+                        continue
+                    a, b, width = rotated_box
+                    if JavelinThrower.is_point_in_rotated_rect(gaze_coords, a, b, width):
+                        gazed_body_part_name = part_name
+                        break # Prioritize specific part over general person box
 
-                # Повёрнутые прямоугольники для каждой части тела
-                body_parts_boxes = {}
-                for part_name, kp_indices in self.body_part_keypoints.items():
-                    rotated_box = self._calculate_rotated_box(
-                        keypoints, kp_indices, app_config.MIN_POSE_CONFIDENCE
-                    )
-                    body_parts_boxes[part_name] = rotated_box  # (a, b, width) или None
+            if gazed_person_id is not None and gazed_body_part_name is not None:
+                break # Gaze found on a person and their part
 
-                face_id = self.get_face_id(frame, box)
-                emotion = self.get_emotion(frame, box)
-                age = self.get_age(frame, box)
-                gender = self.get_gender(frame, box)
+        # Record gaze event
+        self.gaze_history[frame_idx].append({
+            'gazed_person_id': gazed_person_id,
+            'gazed_body_part': gazed_body_part_name,
+            'gaze_coords': gaze_coords
+        })
 
-                people_data.append({
-                     'id': person_id,
-                     'box': box,
-                     'keypoints': keypoints,
-                     'body_parts': body_parts_boxes,
-                     'face_id': face_id,
-                     'emotion': emotion,
-                     'age': age,
-                     'gender': gender
-                    })
-        return people_data
+        # Update durations (assuming each frame represents 1/frame_rate seconds)
+        time_per_frame = 1.0 / self.frame_rate
+        if gazed_person_id is not None:
+            self.gaze_duration_per_person[gazed_person_id] += time_per_frame
+        if gazed_body_part_name is not None:
+            self.gaze_duration_per_part[gazed_body_part_name] += time_per_frame
+
+        # Update transition matrix
+        current_gazed_item = (gazed_person_id, gazed_body_part_name)
+        if self._last_gazed_person_part and self._last_gazed_person_part != current_gazed_item:
+            from_person_id, from_part_name = self._last_gazed_person_part
+            to_person_id, to_part_name = current_gazed_item
+
+            # Record transitions between parts if they are on the same person or to a different person
+            if from_person_id == to_person_id and from_part_name is not None and to_part_name is not None:
+                self.gaze_transitions[from_part_name][to_part_name] += 1
+            elif from_person_id != to_person_id:
+                # Transition to a different person
+                self.gaze_transitions[f"Person {from_person_id}"][f"Person {to_person_id}"] += 1
+            elif from_part_name is None and to_part_name is not None:
+                # Transition from no gaze to a specific part
+                self.gaze_transitions["None"][to_part_name] += 1
+            elif from_part_name is not None and to_part_name is None:
+                # Transition from a specific part to no gaze
+                self.gaze_transitions[from_part_name]["None"] += 1
+
+        self._last_gazed_person_part = current_gazed_item
 
     def generate_statistics(self):
         """Calculates final statistics after video processing."""

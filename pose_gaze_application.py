@@ -65,6 +65,6 @@ class PoseGazeApplication:
                 break
 
         # Generate and display statistics
-        # stats = self.gaze_analyzer.generate_statistics()
-        # self.gaze_analyzer.display_statistics(stats)
+        stats = self.gaze_analyzer.generate_statistics()
+        self.gaze_analyzer.display_statistics(stats)
         self.gaze_analyzer.save_to_excel("test.xlsx")
