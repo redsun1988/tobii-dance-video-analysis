@@ -1,0 +1,21 @@
+# Pose estimation / video / imaging
+ultralytics==8.3.100
+lap==0.5.13  # linear assignment solver required by ultralytics' BoT-SORT/ByteTrack trackers (model.track())
+opencv-python==4.11.0.86
+numpy==2.1.1
+pillow==11.1.0
+
+# Statistics export
+pandas==2.2.3
+openpyxl==3.1.5
+
+# Windows window discovery + mouse fallback for simulated gaze
+pywin32==311
+
+# Local VLM ("what caught your eye") queries via Ollama's OpenAI-compatible API
+openai==2.11.0
+
+# Tobii 4C tracker support. Requires the Tobii 4C hardware + drivers to do
+# anything useful; safe to install without them (falls back to simulated
+# mouse-based gaze, see eye_gaze_tracker.py).
+-e ../CustomTobii4cTracker
