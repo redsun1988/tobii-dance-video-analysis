@@ -1,4 +1,5 @@
 import os
+import re
 import math
 from dataclasses import dataclass
 from collections import defaultdict
@@ -10,6 +11,17 @@ from config import AppConfig
 from javelin_thrower import JavelinThrower
 
 app_config = AppConfig()
+
+_PERSON_LABEL_PREFIX_RE = re.compile(r"^Person (\d+)")
+
+
+def _remap_sum_dict(d, key_fn):
+    """Rekeys a {key: numeric_total} dict through key_fn, summing values
+    that land on the same new key (e.g. two merged person IDs)."""
+    merged = defaultdict(float)
+    for k, v in d.items():
+        merged[key_fn(k)] += v
+    return dict(merged)
 
 
 class GazeTarget:
@@ -96,6 +108,7 @@ class GazeAnalyzer:
         self.saccade_count = 0
         self.confirmed_fixation_count = 0
         self.total_frames = 0
+        self.fixated_person_ids = set()  # person ids that received at least one confirmed fixation
 
         self._last_target = None            # target recorded on the previous frame (for transitions)
         self._prev_local_gaze = None         # local gaze point on the previous in-window frame (for saccade detection)
@@ -236,6 +249,8 @@ class GazeAnalyzer:
             is_new_fixation = True
             self.confirmed_fixation_count += 1
             self._confirmed_target = self._pending_target
+            if self._confirmed_target.kind in (GazeTarget.KIND_PERSON, GazeTarget.KIND_PART):
+                self.fixated_person_ids.add(self._confirmed_target.person_id)
             self._pending_target = None
             self._pending_count = 0
 
@@ -254,6 +269,41 @@ class GazeAnalyzer:
         if self._last_target is not None and self._last_target != target:
             self.gaze_transitions[self._last_target.label][target.label] += 1
         self._last_target = target
+
+    def remap_person_ids(self, id_map):
+        """
+        Applies a {track_id: canonical_id} mapping (from post-hoc identity
+        reconciliation) to every place a person id was recorded, merging
+        durations/counts for ids that turned out to be the same real
+        person. Must run after the video ends, before generate_statistics()
+        or any export.
+        """
+        id_map = {int(old): int(new) for old, new in id_map.items() if int(old) != int(new)}
+        if not id_map:
+            return
+
+        def relabel(label):
+            m = _PERSON_LABEL_PREFIX_RE.match(label)
+            if not m or int(m.group(1)) not in id_map:
+                return label
+            return _PERSON_LABEL_PREFIX_RE.sub(f"Person {id_map[int(m.group(1))]}", label, count=1)
+
+        self.gaze_duration_per_person = _remap_sum_dict(
+            self.gaze_duration_per_person, lambda pid: id_map.get(pid, pid)
+        )
+        self.gaze_duration_per_label = _remap_sum_dict(self.gaze_duration_per_label, relabel)
+
+        new_transitions = defaultdict(lambda: defaultdict(int))
+        for from_label, to_labels in self.gaze_transitions.items():
+            new_from = relabel(from_label)
+            for to_label, count in to_labels.items():
+                new_transitions[new_from][relabel(to_label)] += count
+        self.gaze_transitions = new_transitions
+
+        for event in self.gaze_events:
+            event['target_label'] = relabel(event['target_label'])
+
+        print(f"Applied identity reconciliation: {len(id_map)} person ID(s) merged -> {id_map}")
 
     def generate_statistics(self):
         """Calculates final statistics after video processing."""
@@ -357,11 +407,12 @@ class GazeAnalyzer:
 
         print(f"Statistics saved to Excel file: {filename}")
 
-    def save_to_csv(self, output_dir, vlm_query_log=None):
+    def save_to_csv(self, output_dir, vlm_query_log=None, identity_comparison_log=None):
         """
         Saves all collected statistics to a set of CSV files for further
         analytics: per-frame gaze events, durations, transitions, the VLM
-        attention-probe query log, and a one-row summary.
+        attention-probe query log, the identity-reconciliation comparison
+        log, and a one-row summary.
         """
         os.makedirs(output_dir, exist_ok=True)
         stats = self.generate_statistics()
@@ -388,6 +439,11 @@ class GazeAnalyzer:
         if vlm_query_log is not None:
             pd.DataFrame(vlm_query_log).to_csv(os.path.join(output_dir, 'vlm_queries.csv'), index=False)
 
+        if identity_comparison_log is not None:
+            pd.DataFrame(identity_comparison_log).to_csv(
+                os.path.join(output_dir, 'identity_reconciliation.csv'), index=False
+            )
+
         summary_row = {
             'total_frames': stats['total_frames'],
             'total_time_s': stats['total_time'],
@@ -397,6 +453,7 @@ class GazeAnalyzer:
             'most_gazed_person': stats['most_gazed_person'],
             'most_gazed_part': stats['most_gazed_part'],
             'vlm_query_count': len(vlm_query_log) if vlm_query_log is not None else 0,
+            'identity_comparison_count': len(identity_comparison_log) if identity_comparison_log is not None else 0,
         }
         for source, duration in stats['gaze_duration_per_source'].items():
             summary_row[f'time_source_{source}_s'] = duration

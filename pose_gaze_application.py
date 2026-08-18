@@ -12,6 +12,7 @@ from gaze_analyzer import GazeAnalyzer
 from pose_estimator import PoseEstimator
 from eye_gaze_tracker import EyeGazeTracker
 from vlm_attention_probe import VlmAttentionProbe
+from identity_reconciler import PersonIdentityReconciler
 from video_window import VideoPlayerWindow, WindowNotFoundError
 from javelin_thrower import JavelinThrower
 
@@ -27,6 +28,7 @@ class PoseGazeApplication:
         self.pose_estimator = PoseEstimator()
         self.gaze_analyzer = GazeAnalyzer()
         self.vlm_probe = VlmAttentionProbe()
+        self.identity_reconciler = PersonIdentityReconciler()
         self.frame_idx = 0
 
     @staticmethod
@@ -143,6 +145,7 @@ class PoseGazeApplication:
                 gaze_source = "simulated" if self.eye_tracker.is_simulated else "tobii"
 
                 people_data = self.pose_estimator.process_frame(frame)
+                self.identity_reconciler.observe_frame(frame, people_data, self.frame_idx)
 
                 now = time.time()
                 dt = now - last_time
@@ -171,6 +174,14 @@ class PoseGazeApplication:
         print("Waiting for pending VLM attention-probe queries to finish...")
         self.vlm_probe.stop()
 
+        print("Running post-hoc person identity reconciliation...")
+        id_map = self.identity_reconciler.reconcile(self.gaze_analyzer.fixated_person_ids)
+        merged_count = sum(1 for old, new in id_map.items() if old != new)
+        if merged_count:
+            self.gaze_analyzer.remap_person_ids(id_map)
+        else:
+            print("Identity reconciliation found no matching person pairs to merge.")
+
         stats = self.gaze_analyzer.generate_statistics()
         self.gaze_analyzer.display_statistics(stats)
 
@@ -178,5 +189,9 @@ class PoseGazeApplication:
         output_dir = os.path.join(app_config.CSV_OUTPUT_DIR, run_id)
         os.makedirs(output_dir, exist_ok=True)
 
-        self.gaze_analyzer.save_to_csv(output_dir, vlm_query_log=self.vlm_probe.query_log)
+        self.gaze_analyzer.save_to_csv(
+            output_dir,
+            vlm_query_log=self.vlm_probe.query_log,
+            identity_comparison_log=self.identity_reconciler.comparison_log,
+        )
         self.gaze_analyzer.save_to_excel(os.path.join(output_dir, "gaze_statistics.xlsx"))

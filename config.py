@@ -48,6 +48,26 @@ class AppConfig(metaclass=Singleton):
         self.BACKGROUND_CROP_SIZE_PX = 240  # crop size when gaze lands on no detected person
         self.PERSON_CROP_RATIO = 0.4  # crop size (fraction of person box) when gaze is on a person but no specific part
 
+        # --- Post-hoc person identity reconciliation ----------------------------------
+        # Pose tracking fragments one real dancer into several track IDs when they're
+        # occluded or leave/re-enter frame. After playback ends, this samples a few
+        # crops per track ID and asks the local VLM to compare each of one ID's crops
+        # against a reference crop of another ID; if a majority say "same person", the
+        # two IDs are merged before final statistics are computed. Only ID pairs where
+        # both IDs received at least one confirmed gaze fixation are compared (an ID
+        # nobody looked at can't skew gaze stats), and IDs that were ever visible in
+        # the same frame are never compared (they can't be the same person).
+        self.IDENTITY_RECONCILE_ENABLED = True
+        self.IDENTITY_RECONCILE_CROPS_PER_PERSON = 5  # sample crops kept per track ID for cross-ID comparison
+        self.IDENTITY_RECONCILE_MAJORITY_THRESHOLD = 0.5  # fraction of "same person" votes (exclusive) needed to merge
+        self.IDENTITY_RECONCILE_PROMPT = (
+            "These are two cropped photos from a dance video. The first photo is a "
+            "reference image of one tracked person. The second photo may or may not "
+            "show the same individual person - judge by clothing, hair, build and "
+            "visible skin tone, not by pose or camera angle. Answer with a single "
+            "word first, 'yes' or 'no', then a short reason."
+        )
+
         # --- Output -------------------------------------------------------------------
         self.CSV_OUTPUT_DIR = "output"
 
