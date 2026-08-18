@@ -1,5 +1,5 @@
 # Pose estimation / video / imaging
-ultralytics==8.3.100
+ultralytics==8.4.121  # YOLO26-Pose support
 lap==0.5.13  # linear assignment solver required by ultralytics' BoT-SORT/ByteTrack trackers (model.track())
 opencv-python==4.11.0.86
 numpy==2.1.1

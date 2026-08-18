@@ -8,9 +8,10 @@ app_config = AppConfig()
 
 
 class PoseEstimator:
-    """Handles YOLOv8-Pose model for human pose estimation and tracking."""
+    """Handles a YOLO-Pose model (YOLO26/YOLO11/YOLOv8) for human pose estimation and tracking."""
 
-    # COCO keypoint indices, as produced by YOLOv8-Pose:
+    # COCO keypoint indices, as produced by YOLO-Pose (same layout across
+    # YOLOv8/YOLO11/YOLO26):
     # 0 nose, 1 left_eye, 2 right_eye, 3 left_ear, 4 right_ear,
     # 5 left_shoulder, 6 right_shoulder, 7 left_elbow, 8 right_elbow,
     # 9 left_wrist, 10 right_wrist, 11 left_hip, 12 right_hip,
@@ -61,7 +62,7 @@ class PoseEstimator:
     SEGMENT_LENGTH_PAD_RATIO = 0.15  # extend segment ends past the joints by this fraction of its length
     MULTI_POINT_PAD_RATIO = 0.12     # pad head/torso rectangles by this fraction of person_scale
 
-    # Connections for drawing skeletons (from YOLOv8-Pose example)
+    # Connections for drawing skeletons (from Ultralytics YOLO-Pose example)
     pose_connections = [
         (5, 7), (7, 9),       # Left arm
         (6, 8), (8, 10),      # Right arm
@@ -73,9 +74,9 @@ class PoseEstimator:
     def __init__(self, model_name=app_config.YOLO_MODEL_NAME):
         if not app_config.YOLO_AVAILABLE:
             raise ImportError("YOLO library is not available.")
-        print(f"Loading YOLOv8-Pose model: {model_name}...")
+        print(f"Loading YOLO-Pose model: {model_name}...")
         self.model = YOLO(model_name)
-        print("YOLOv8-Pose model loaded.")
+        print("YOLO-Pose model loaded.")
         self.known_faces = {}  # mapping from face encoding to unique ID
 
     def process_frame(self, frame):

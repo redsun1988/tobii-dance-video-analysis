@@ -7,7 +7,7 @@ class Singleton(type):
 
 class AppConfig(metaclass=Singleton):
     def __init__(self):
-        self.YOLO_MODEL_NAME  = 'yolov8n-pose.pt'
+        self.YOLO_MODEL_NAME  = 'yolo26n-pose.pt'
         self.MIN_POSE_CONFIDENCE  = 0.5   # Minimum confidence for a keypoint to be considered valid [1]
         self.DRAW_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to draw a keypoint/connection [1]
 
@@ -28,8 +28,8 @@ class AppConfig(metaclass=Singleton):
 
         # --- Local VLM ("what caught your eye") attention probe ----------------------
         self.VLM_ENABLED = True
-        self.VLM_MODEL_NAME = "qwen2.5vl:7b"  # vision-capable model already pulled locally; swap to "llava" once pulled
-        self.VLM_BASE_URL = "http://localhost:11434/v1"  # Ollama's OpenAI-compatible endpoint
+        self.VLM_MODEL_NAME = "muse-glimmer:latest"  # vision-capable model already pulled locally; swap to "llava" once pulled
+        self.VLM_BASE_URL = "http://192.168.1.12:11434/v1"  # Ollama's OpenAI-compatible endpoint
         self.VLM_API_KEY = "ollama"  # unused by Ollama but required by the OpenAI SDK
         self.VLM_PROMPT = (
             "This is a cropped frame from a dance video, taken from the region a viewer "
@@ -59,7 +59,7 @@ class AppConfig(metaclass=Singleton):
             self.TOBII_AVAILABLE = False
 
         try:
-            import ultralytics  # YOLOv8-Pose for Human Pose Estimation and Tracking
+            import ultralytics  # YOLO-Pose for Human Pose Estimation and Tracking
             self.YOLO_AVAILABLE  = True
         except ImportError:
             print("Error: ultralytics (YOLO) library not found. Pose estimation is unavailable.")

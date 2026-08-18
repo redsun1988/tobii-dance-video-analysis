@@ -3,6 +3,7 @@ import time
 import ctypes
 from typing import Optional, Tuple
 
+import win32con
 import win32gui
 
 
@@ -91,6 +92,7 @@ class VideoPlayerWindow:
                 chosen = max(candidates, key=lambda h: self._window_rect_size(h)[0] * self._window_rect_size(h)[1])
 
             self.hwnd = chosen
+            win32gui.ShowWindow(chosen, win32con.SW_MAXIMIZE)
             return chosen
 
         raise WindowNotFoundError(
