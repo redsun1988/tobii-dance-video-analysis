@@ -9,6 +9,9 @@ pillow==11.1.0
 pandas==2.2.3
 openpyxl==3.1.5
 
+# Arrow-key/Enter/Escape console start menu
+prompt_toolkit==3.0.43
+
 # Windows window discovery + mouse fallback for simulated gaze
 pywin32==311
 

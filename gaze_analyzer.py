@@ -479,7 +479,7 @@ class GazeAnalyzer:
                 for to_label, count in to_labels.items():
                     print(f"  From '{from_label}' to '{to_label}': {count} times")
 
-    def save_to_excel(self, filename, demographics=None, stats=None):
+    def save_to_excel(self, filename, demographics=None, stats=None, viewer_profile=None):
         """Saves all possible and interesting statistics to an Excel file.
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
@@ -497,6 +497,9 @@ class GazeAnalyzer:
         gaze_transitions = pd.DataFrame(gaze_transitions)
 
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            if viewer_profile:
+                self._viewer_profile_dataframe(viewer_profile).to_excel(writer, sheet_name='Viewer Profile', index=False)
+
             person_gaze_duration.to_excel(writer, sheet_name='Gaze Duration per Person', index=False)
             part_gaze_ratio.to_excel(writer, sheet_name='Ratio of Gaze per Body Part', index=False)
             gaze_transitions.to_excel(writer, sheet_name='Gaze Transition Counts', index=False)
@@ -512,6 +515,14 @@ class GazeAnalyzer:
                         .to_excel(writer, sheet_name=f'Body Part Gaze by {label}', index=False)
 
         print(f"Statistics saved to Excel file: {filename}")
+
+    @staticmethod
+    def _viewer_profile_dataframe(viewer_profile):
+        """Builds the single-row viewer-profile table (see viewer_profile.py)
+        shared by the Excel and CSV exports."""
+        columns = ['full_name', 'gender', 'age', 'occupation', 'dance_experience']
+        row = {col: (viewer_profile or {}).get(col) for col in columns}
+        return pd.DataFrame([row], columns=columns)
 
     @staticmethod
     def _demographics_dataframe(demographics):
@@ -566,13 +577,14 @@ class GazeAnalyzer:
         return pd.DataFrame(rows, columns=[group_col, 'body_part', 'duration_s', 'ratio'])
 
     def save_to_csv(self, output_dir, vlm_query_log=None, identity_comparison_log=None,
-                     demographics=None, demographics_query_log=None, stats=None):
+                     demographics=None, demographics_query_log=None, stats=None, viewer_profile=None):
         """
         Saves all collected statistics to a set of CSV files for further
         analytics: per-frame gaze events, durations, transitions, the VLM
         attention-probe query log, the identity-reconciliation comparison
         log, the per-person age/gender majority-vote results and their
-        underlying per-crop judgments, and a one-row summary.
+        underlying per-crop judgments, the viewer's self-reported profile,
+        and a one-row summary.
 
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
@@ -581,6 +593,11 @@ class GazeAnalyzer:
         os.makedirs(output_dir, exist_ok=True)
         if stats is None:
             stats = self.generate_statistics(demographics)
+
+        if viewer_profile:
+            self._viewer_profile_dataframe(viewer_profile).to_csv(
+                os.path.join(output_dir, 'viewer_profile.csv'), index=False
+            )
 
         pd.DataFrame(self.gaze_events).to_csv(os.path.join(output_dir, 'gaze_events.csv'), index=False)
 

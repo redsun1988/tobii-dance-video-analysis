@@ -24,7 +24,7 @@ class PoseGazeApplication:
     """Orchestrates video playback window discovery, gaze tracking, pose
     estimation, gaze-to-body-part analysis, and the VLM attention probe."""
 
-    def __init__(self):
+    def __init__(self, viewer_profile=None):
         self.eye_tracker = EyeGazeTracker()
         self.pose_estimator = PoseEstimator()
         self.gaze_analyzer = GazeAnalyzer()
@@ -32,6 +32,7 @@ class PoseGazeApplication:
         self.identity_reconciler = PersonIdentityReconciler()
         self.demographics_estimator = PersonDemographicsEstimator()
         self.frame_idx = 0
+        self.viewer_profile = viewer_profile
 
     @staticmethod
     def _get_video_duration(filename):
@@ -214,7 +215,11 @@ class PoseGazeApplication:
             demographics=demographics,
             demographics_query_log=self.demographics_estimator.query_log,
             stats=stats,
+            viewer_profile=self.viewer_profile,
         )
         self.gaze_analyzer.save_to_excel(
-            os.path.join(output_dir, "gaze_statistics.xlsx"), demographics=demographics, stats=stats
+            os.path.join(output_dir, "gaze_statistics.xlsx"),
+            demographics=demographics,
+            stats=stats,
+            viewer_profile=self.viewer_profile,
         )
