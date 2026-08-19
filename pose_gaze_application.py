@@ -10,9 +10,10 @@ import cv2
 from config import AppConfig
 from gaze_analyzer import GazeAnalyzer
 from pose_estimator import PoseEstimator
-from eye_gaze_tracker import EyeGazeTracker
+from eye_gaze_tracker import EyeGazeTracker, GazeUnavailableError
 from vlm_attention_probe import VlmAttentionProbe
 from identity_reconciler import PersonIdentityReconciler
+from demographics_estimator import PersonDemographicsEstimator
 from video_window import VideoPlayerWindow, WindowNotFoundError
 from javelin_thrower import JavelinThrower
 
@@ -29,6 +30,7 @@ class PoseGazeApplication:
         self.gaze_analyzer = GazeAnalyzer()
         self.vlm_probe = VlmAttentionProbe()
         self.identity_reconciler = PersonIdentityReconciler()
+        self.demographics_estimator = PersonDemographicsEstimator()
         self.frame_idx = 0
 
     @staticmethod
@@ -139,18 +141,30 @@ class PoseGazeApplication:
 
                 frame, capture_bbox = self._capture_frame(window)
 
-                gaze_x, gaze_y, _ = self.eye_tracker.get_gaze_coords()
-                gaze_absolute = (gaze_x, gaze_y)
-                gaze_local, in_window = self._to_local(gaze_absolute, capture_bbox)
-                gaze_source = "simulated" if self.eye_tracker.is_simulated else "tobii"
-
+                # Pose/identity/demographics sampling doesn't depend on
+                # gaze - run it unconditionally so a failed gaze read (a
+                # blink, momentary tracking loss) only skips the
+                # gaze-dependent analysis below, not this whole frame.
                 people_data = self.pose_estimator.process_frame(frame)
                 self.identity_reconciler.observe_frame(frame, people_data, self.frame_idx)
+                self.demographics_estimator.observe_frame(frame, people_data, self.frame_idx)
 
                 now = time.time()
                 dt = now - last_time
                 last_time = now
                 timestamp = now - start_time
+
+                try:
+                    gaze_x, gaze_y, _ = self.eye_tracker.get_gaze_coords()
+                except GazeUnavailableError as e:
+                    print(f"Gaze unavailable this frame - {e}")
+                    time.sleep(app_config.GAZE_UNAVAILABLE_RETRY_DELAY_S)
+                    self.frame_idx += 1
+                    continue
+
+                gaze_absolute = (gaze_x, gaze_y)
+                gaze_local, in_window = self._to_local(gaze_absolute, capture_bbox)
+                gaze_source = "simulated" if self.eye_tracker.is_simulated else "tobii"
 
                 analysis = self.gaze_analyzer.analyze_frame(
                     self.frame_idx, timestamp, people_data, gaze_absolute, gaze_local, in_window, gaze_source, dt
@@ -175,15 +189,19 @@ class PoseGazeApplication:
         self.vlm_probe.stop()
 
         print("Running post-hoc person identity reconciliation...")
-        id_map = self.identity_reconciler.reconcile(self.gaze_analyzer.fixated_person_ids)
+        fixated_person_ids = set(self.gaze_analyzer.fixated_person_ids)
+        id_map = self.identity_reconciler.reconcile(fixated_person_ids)
         merged_count = sum(1 for old, new in id_map.items() if old != new)
         if merged_count:
             self.gaze_analyzer.remap_person_ids(id_map)
         else:
             print("Identity reconciliation found no matching person pairs to merge.")
 
-        stats = self.gaze_analyzer.generate_statistics()
-        self.gaze_analyzer.display_statistics(stats)
+        print("Estimating age/gender for all detected persons...")
+        demographics = self.demographics_estimator.estimate(id_map)
+
+        stats = self.gaze_analyzer.generate_statistics(demographics)
+        self.gaze_analyzer.display_statistics(stats, demographics=demographics)
 
         run_id = time.strftime("%Y%m%d_%H%M%S")
         output_dir = os.path.join(app_config.CSV_OUTPUT_DIR, run_id)
@@ -193,5 +211,10 @@ class PoseGazeApplication:
             output_dir,
             vlm_query_log=self.vlm_probe.query_log,
             identity_comparison_log=self.identity_reconciler.comparison_log,
+            demographics=demographics,
+            demographics_query_log=self.demographics_estimator.query_log,
+            stats=stats,
         )
-        self.gaze_analyzer.save_to_excel(os.path.join(output_dir, "gaze_statistics.xlsx"))
+        self.gaze_analyzer.save_to_excel(
+            os.path.join(output_dir, "gaze_statistics.xlsx"), demographics=demographics, stats=stats
+        )

@@ -11,6 +11,18 @@ class AppConfig(metaclass=Singleton):
         self.MIN_POSE_CONFIDENCE  = 0.5   # Minimum confidence for a keypoint to be considered valid [1]
         self.DRAW_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to draw a keypoint/connection [1]
 
+        # --- Gaze source --------------------------------------------------------------
+        # Simulating gaze via the mouse cursor exists only to exercise the pipeline
+        # without the physical Tobii 4C tracker attached. It must stay off by default:
+        # in a real session it would silently produce meaningless statistics (mouse
+        # position mistaken for actual gaze) instead of failing loudly. Flip this to
+        # True only for a deliberate hardware-less test run.
+        self.GAZE_SIMULATION_ENABLED = False
+        # Throttle retries while a real tracker's gaze sample is unavailable (blink,
+        # momentary tracking loss), so a prolonged hardware outage doesn't busy-spin
+        # full-screen captures with zero delay between attempts.
+        self.GAZE_UNAVAILABLE_RETRY_DELAY_S = 0.5
+
         # --- Video window discovery -------------------------------------------------
         # How long to wait for the OS-default video player window to appear after
         # launching the video file, before giving up and falling back to
@@ -58,14 +70,56 @@ class AppConfig(metaclass=Singleton):
         # nobody looked at can't skew gaze stats), and IDs that were ever visible in
         # the same frame are never compared (they can't be the same person).
         self.IDENTITY_RECONCILE_ENABLED = True
-        self.IDENTITY_RECONCILE_CROPS_PER_PERSON = 5  # sample crops kept per track ID for cross-ID comparison
-        self.IDENTITY_RECONCILE_MAJORITY_THRESHOLD = 0.5  # fraction of "same person" votes (exclusive) needed to merge
+        self.IDENTITY_RECONCILE_CROPS_PER_PERSON = 3  # sample crops kept per track ID for cross-ID comparison
+        # Fraction of "same person" votes (exclusive) needed to merge. Votes are whole
+        # crops, so the *effective* agreement bar is rounded up by
+        # IDENTITY_RECONCILE_CROPS_PER_PERSON, not exactly this fraction - e.g. at the
+        # current 3 crops, 0.5 actually requires 2/3 (~67%) agreement, not ~50%; it
+        # would be 3/5 (60%) at 5 crops. That effective bar shifts whenever the crop
+        # count changes, even though this threshold value doesn't.
+        self.IDENTITY_RECONCILE_MAJORITY_THRESHOLD = 0.5
         self.IDENTITY_RECONCILE_PROMPT = (
             "These are two cropped photos from a dance video. The first photo is a "
             "reference image of one tracked person. The second photo may or may not "
             "show the same individual person - judge by clothing, hair, build and "
             "visible skin tone, not by pose or camera angle. Answer with a single "
             "word first, 'yes' or 'no', then a short reason."
+        )
+
+        # --- Post-hoc appearance estimation for every detected person ------------------
+        # A single frame is an unreliable source for these judgments (motion blur, bad
+        # angle, occlusion), so - like identity reconciliation above - this samples a
+        # few crops per track ID while the video plays, then after playback asks the
+        # local VLM to judge each crop independently, per attribute, and takes a
+        # majority vote across those judgments. Every track ID that collected at least
+        # one crop is judged, regardless of whether it ever received a gaze fixation.
+        self.DEMOGRAPHICS_ENABLED = True
+        self.DEMOGRAPHICS_CROPS_PER_PERSON = 2  # sampled crops per person for the majority vote
+        # Fraction of an attribute's non-null votes (exclusive) a category needs to be
+        # reported as that person's value; otherwise the attribute is left unresolved
+        # (None / 'unknown') rather than reporting a bare plurality winner from a
+        # near-tied vote.
+        self.DEMOGRAPHICS_MAJORITY_THRESHOLD = 0.5
+        self.DEMOGRAPHICS_AGE_CATEGORIES = ('child', 'teen', 'young_adult', 'adult', 'senior')
+        self.DEMOGRAPHICS_GENDERS = ('male', 'female')
+        self.DEMOGRAPHICS_BODY_BUILDS = ('slim', 'athletic', 'average', 'heavy')
+        self.DEMOGRAPHICS_CLOTHING_COLORS = (
+            'black', 'white', 'gray', 'red', 'orange', 'yellow', 'green', 'blue',
+            'purple', 'pink', 'brown', 'multicolor',
+        )
+        self.DEMOGRAPHICS_PROMPT = (
+            "This is a cropped photo of one person from a dance video. Estimate this "
+            "person's approximate age category, apparent gender, body build, and the "
+            "single most dominant color of their clothing, based on their visible face, "
+            "build, hair and clothing. Respond on the first line with exactly four words "
+            "separated by commas, in this order: "
+            "1) age category from [child, teen, young_adult, adult, senior], "
+            "2) gender from [male, female], "
+            "3) body build from [slim, athletic, average, heavy], "
+            "4) dominant clothing color from [black, white, gray, red, orange, yellow, "
+            "green, blue, purple, pink, brown, multicolor]. "
+            "For example: 'young_adult, female, athletic, black'. Then give a short "
+            "reason on the next line."
         )
 
         # --- Output -------------------------------------------------------------------
@@ -75,8 +129,12 @@ class AppConfig(metaclass=Singleton):
             import CustomTobii4cTracker
             self.TOBII_AVAILABLE = True
         except ImportError:
-            print("Warning: CustomTobii4cTracker not found. Gaze tracking will be simulated (mouse cursor).")
             self.TOBII_AVAILABLE = False
+            if self.GAZE_SIMULATION_ENABLED:
+                print("Warning: CustomTobii4cTracker not found. Gaze tracking will be simulated (mouse cursor).")
+            else:
+                print("Warning: CustomTobii4cTracker not found, and GAZE_SIMULATION_ENABLED is False - "
+                      "a real Tobii 4C tracker will be required to start.")
 
         try:
             import ultralytics  # YOLO-Pose for Human Pose Estimation and Tracking
