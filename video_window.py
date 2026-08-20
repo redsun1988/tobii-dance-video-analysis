@@ -116,3 +116,16 @@ class VideoPlayerWindow:
 
     def get_title(self) -> str:
         return win32gui.GetWindowText(self.hwnd) if self.hwnd else ""
+
+    def close(self) -> None:
+        """Asks the tracked player window to close (WM_CLOSE - the same
+        request sent by clicking its title-bar close button), so the player
+        doesn't linger once analysis of its video has stopped. Best-effort:
+        does nothing if the window is already gone, and never raises if the
+        close request itself fails (the player may ignore/prompt on it)."""
+        if not self.is_alive():
+            return
+        try:
+            win32gui.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
+        except Exception as e:
+            print(f"Warning: failed to close video player window: {e}")

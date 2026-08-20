@@ -241,6 +241,107 @@ class PoseEstimator:
 
         return (tuple(a), tuple(b), float(width))
 
+    # --- Video analysis caching (see database.py) -------------------------------
+
+    @classmethod
+    def people_data_to_cache_rows(cls, people_data, content_rect):
+        """
+        Converts one frame's process_frame() output into JSON-safe,
+        resolution-independent rows for the video analysis cache: box/body-
+        part endpoint coordinates are stored as fractions of `content_rect`
+        (x0, y0, w, h) - the sub-rectangle of this frame actually occupied
+        by the video's own content, not necessarily the whole captured
+        frame (see video_geometry.letterboxed_content_rect). Normalizing
+        against the content rect rather than the raw frame is what makes a
+        cached video's layout stay valid however its capture window is
+        later moved, resized, or shown on a different monitor, AND lets a
+        live window-capture session and a headless direct file decode (see
+        video_precomputer.py, where content_rect is simply the whole
+        decoded frame) share the same coordinate space.
+
+        A rotated box's `width` is its perpendicular thickness, not tied to
+        a single axis, so it can't be split into independent x/y scale
+        factors the way endpoint coordinates can; it's normalized against
+        the content rect's height as a single reference axis, which is
+        exact whenever the aspect ratio is preserved and only mildly
+        approximate otherwise.
+
+        Returns [] for a degenerate (zero-width or zero-height) content
+        rect - e.g. a minimized player window - rather than raising, since
+        that's just one sample worth silently dropping from the cache.
+        """
+        x0, y0, content_w, content_h = content_rect
+        if content_w <= 0 or content_h <= 0:
+            return []
+
+        rows = []
+        for person in people_data:
+            x1, y1, x2, y2 = person['box']
+            box_frac = [
+                (x1 - x0) / content_w, (y1 - y0) / content_h,
+                (x2 - x0) / content_w, (y2 - y0) / content_h,
+            ]
+
+            body_parts_frac = {}
+            for part_name, rotated_box in person['body_parts'].items():
+                if rotated_box is None:
+                    body_parts_frac[part_name] = None
+                    continue
+                (ax, ay), (bx, by), width = rotated_box
+                body_parts_frac[part_name] = [
+                    (ax - x0) / content_w, (ay - y0) / content_h,
+                    (bx - x0) / content_w, (by - y0) / content_h,
+                    width / content_h,
+                ]
+
+            rows.append({
+                'track_id': int(person['id']),
+                'box': box_frac,
+                'body_parts': body_parts_frac,
+            })
+        return rows
+
+    @classmethod
+    def cache_rows_to_people_data(cls, rows, content_rect):
+        """
+        Inverse of people_data_to_cache_rows(): reconstructs a
+        process_frame()-shaped people_data list (only the 'id', 'box' and
+        'body_parts' keys - the only ones any downstream consumer reads)
+        from cached fractional coordinates, scaled to the current frame's
+        `content_rect` (x0, y0, w, h).
+
+        Returns [] for a degenerate (zero-width or zero-height) content
+        rect - e.g. a momentarily minimized player window during cache
+        replay - rather than collapsing every position to a single point,
+        mirroring people_data_to_cache_rows' same-situation behavior.
+        """
+        x0, y0, content_w, content_h = content_rect
+        if content_w <= 0 or content_h <= 0:
+            return []
+
+        people_data = []
+        for row in rows:
+            x1f, y1f, x2f, y2f = row['box']
+            box = np.array([
+                x0 + x1f * content_w, y0 + y1f * content_h,
+                x0 + x2f * content_w, y0 + y2f * content_h,
+            ])
+
+            body_parts = {}
+            for part_name, part in row['body_parts'].items():
+                if part is None:
+                    body_parts[part_name] = None
+                    continue
+                axf, ayf, bxf, byf, wf = part
+                body_parts[part_name] = (
+                    (x0 + axf * content_w, y0 + ayf * content_h),
+                    (x0 + bxf * content_w, y0 + byf * content_h),
+                    wf * content_h,
+                )
+
+            people_data.append({'id': row['track_id'], 'box': box, 'body_parts': body_parts})
+        return people_data
+
     def get_face_id(self, frame, box):
         x1, y1, x2, y2 = box
         cropped_frame = frame[y1:y2, x1:x2]

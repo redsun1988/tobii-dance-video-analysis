@@ -87,6 +87,22 @@ class PersonIdentityReconciler:
         b0, b1 = self._first_seen_frame[id_b], self._last_seen_frame[id_b]
         return a0 <= b1 and b0 <= a1
 
+    def estimate_pair_count(self):
+        """
+        Returns (num_track_ids, num_eligible_pairs): the number of distinct
+        track IDs that collected at least one crop, and how many of their
+        pairwise combinations are eligible for identity comparison (not
+        provably-simultaneous). Lets a caller estimate reconciliation cost
+        before running reconcile() - each eligible pair costs at least 2 VLM
+        queries (see _same_person's early-exit), and a call can take minutes
+        on a CPU-only local VLM, so an exhaustive reconcile(None) pass over
+        many fragmented track IDs can be very slow - see video_precomputer.py.
+        """
+        person_ids = [pid for pid, crops in self._crops.items() if crops]
+        all_pairs = list(itertools.combinations(person_ids, 2))
+        not_simultaneous = [(a, b) for a, b in all_pairs if not self._ranges_overlap(a, b)]
+        return len(person_ids), len(not_simultaneous)
+
     def reconcile(self, fixated_person_ids):
         """
         Runs after the video ends: compares track IDs pairwise - restricted
@@ -97,6 +113,12 @@ class PersonIdentityReconciler:
         {track_id: canonical_id} for every track ID that collected at least
         one crop - IDs that weren't merged (including ones excluded from
         comparison) map to themselves.
+
+        `fixated_person_ids=None` drops the gaze-fixation filter entirely -
+        every non-simultaneous pair is compared. Used by the headless
+        precompute pipeline (video_precomputer.py), which has no live gaze
+        data at all and wants every track ID pair checked for a match, not
+        just ones a viewer happened to look at.
         """
         person_ids = [pid for pid, crops in self._crops.items() if crops]
         parent = {pid: pid for pid in person_ids}
@@ -112,10 +134,15 @@ class PersonIdentityReconciler:
 
         all_pairs = list(itertools.combinations(person_ids, 2))
         not_simultaneous = [(a, b) for a, b in all_pairs if not self._ranges_overlap(a, b)]
-        candidate_pairs = [(a, b) for a, b in not_simultaneous if a in fixated_person_ids and b in fixated_person_ids]
+        if fixated_person_ids is None:
+            candidate_pairs = not_simultaneous
+            skip_reason = "no gaze-fixation filter applied (exhaustive comparison)"
+        else:
+            candidate_pairs = [(a, b) for a, b in not_simultaneous if a in fixated_person_ids and b in fixated_person_ids]
+            skip_reason = "no confirmed gaze fixation on both IDs"
         print(f"Identity reconciliation: comparing {len(candidate_pairs)} of {len(all_pairs)} track ID pair(s) "
               f"({len(all_pairs) - len(not_simultaneous)} skipped as provably simultaneous people, "
-              f"{len(not_simultaneous) - len(candidate_pairs)} skipped - no confirmed gaze fixation on both IDs).")
+              f"{len(not_simultaneous) - len(candidate_pairs)} skipped - {skip_reason}).")
 
         for id_a, id_b in candidate_pairs:
             ra, rb = find(id_a), find(id_b)

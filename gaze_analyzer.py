@@ -479,8 +479,15 @@ class GazeAnalyzer:
                 for to_label, count in to_labels.items():
                     print(f"  From '{from_label}' to '{to_label}': {count} times")
 
-    def save_to_excel(self, filename, demographics=None, stats=None, viewer_profile=None):
-        """Saves all possible and interesting statistics to an Excel file.
+    def save_to_excel(self, filename, vlm_query_log=None, identity_comparison_log=None,
+                       demographics=None, demographics_query_log=None, stats=None, viewer_profile=None,
+                       extra_summary_fields=None):
+        """Saves all possible and interesting statistics to an Excel file -
+        the same information save_to_csv() writes as separate CSV files,
+        including its one-row summary (here a 'Summary' sheet), so neither
+        export is missing information the other has (e.g. whether this run
+        used the video analysis cache - see PoseGazeApplication).
+
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
         computed here from `demographics`."""
@@ -496,7 +503,14 @@ class GazeAnalyzer:
                 gaze_transitions.append({'From': from_label, 'To': to_label, 'Count': count})
         gaze_transitions = pd.DataFrame(gaze_transitions)
 
+        summary_row = self._build_summary_row(
+            stats, vlm_query_log, identity_comparison_log, demographics, demographics_query_log,
+            extra_summary_fields,
+        )
+
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            pd.DataFrame([summary_row]).to_excel(writer, sheet_name='Summary', index=False)
+
             if viewer_profile:
                 self._viewer_profile_dataframe(viewer_profile).to_excel(writer, sheet_name='Viewer Profile', index=False)
 
@@ -559,6 +573,31 @@ class GazeAnalyzer:
         ]
         return pd.DataFrame(rows, columns=[group_col, 'duration_s', 'ratio'])
 
+    def _build_summary_row(self, stats, vlm_query_log, identity_comparison_log, demographics,
+                            demographics_query_log, extra_summary_fields):
+        """Builds the one-row session summary dict shared by save_to_csv's
+        summary.csv and save_to_excel's 'Summary' sheet."""
+        summary_row = {
+            'total_frames': stats['total_frames'],
+            'total_time_s': stats['total_time'],
+            'total_gaze_on_people_s': stats['total_gaze_time'],
+            'saccade_count': stats['saccade_count'],
+            'confirmed_fixation_count': stats['confirmed_fixation_count'],
+            'most_gazed_person': stats['most_gazed_person'],
+            'most_gazed_part': stats['most_gazed_part'],
+            'vlm_query_count': len(vlm_query_log) if vlm_query_log is not None else 0,
+            'identity_comparison_count': len(identity_comparison_log) if identity_comparison_log is not None else 0,
+            'demographics_person_count': len(demographics) if demographics is not None else 0,
+            'demographics_query_count': len(demographics_query_log) if demographics_query_log is not None else 0,
+        }
+        for attr in self.DEMOGRAPHIC_GROUP_LABELS:
+            summary_row[f'most_gazed_{attr}'] = stats.get(f'most_gazed_{attr}')
+        for source, duration in stats['gaze_duration_per_source'].items():
+            summary_row[f'time_source_{source}_s'] = duration
+        if extra_summary_fields:
+            summary_row.update(extra_summary_fields)
+        return summary_row
+
     @staticmethod
     def _group_part_dataframe(duration_by_group_part, ratio_by_group_part, group_col):
         """Builds a {gender|age -> {body_part -> gaze duration/ratio}} table
@@ -577,7 +616,8 @@ class GazeAnalyzer:
         return pd.DataFrame(rows, columns=[group_col, 'body_part', 'duration_s', 'ratio'])
 
     def save_to_csv(self, output_dir, vlm_query_log=None, identity_comparison_log=None,
-                     demographics=None, demographics_query_log=None, stats=None, viewer_profile=None):
+                     demographics=None, demographics_query_log=None, stats=None, viewer_profile=None,
+                     extra_summary_fields=None):
         """
         Saves all collected statistics to a set of CSV files for further
         analytics: per-frame gaze events, durations, transitions, the VLM
@@ -588,7 +628,9 @@ class GazeAnalyzer:
 
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
-        computed here from `demographics`.
+        computed here from `demographics`. `extra_summary_fields`, if given,
+        is merged into the one-row summary.csv (e.g. whether this run used
+        the video analysis cache - see PoseGazeApplication).
         """
         os.makedirs(output_dir, exist_ok=True)
         if stats is None:
@@ -645,24 +687,10 @@ class GazeAnalyzer:
                     os.path.join(output_dir, f'body_part_by_{attr}.csv'), index=False
                 )
 
-        summary_row = {
-            'total_frames': stats['total_frames'],
-            'total_time_s': stats['total_time'],
-            'total_gaze_on_people_s': stats['total_gaze_time'],
-            'saccade_count': stats['saccade_count'],
-            'confirmed_fixation_count': stats['confirmed_fixation_count'],
-            'most_gazed_person': stats['most_gazed_person'],
-            'most_gazed_part': stats['most_gazed_part'],
-            'vlm_query_count': len(vlm_query_log) if vlm_query_log is not None else 0,
-            'identity_comparison_count': len(identity_comparison_log) if identity_comparison_log is not None else 0,
-            'demographics_person_count': len(demographics) if demographics is not None else 0,
-            'demographics_query_count': len(demographics_query_log) if demographics_query_log is not None else 0,
-        }
-        for attr in self.DEMOGRAPHIC_GROUP_LABELS:
-            summary_row[f'most_gazed_{attr}'] = stats.get(f'most_gazed_{attr}')
-        for source, duration in stats['gaze_duration_per_source'].items():
-            summary_row[f'time_source_{source}_s'] = duration
-
+        summary_row = self._build_summary_row(
+            stats, vlm_query_log, identity_comparison_log, demographics, demographics_query_log,
+            extra_summary_fields,
+        )
         pd.DataFrame([summary_row]).to_csv(os.path.join(output_dir, 'summary.csv'), index=False)
 
         print(f"Statistics saved to CSV files in: {output_dir}")

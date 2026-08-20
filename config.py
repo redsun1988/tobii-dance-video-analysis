@@ -12,71 +12,77 @@ class AppConfig(metaclass=Singleton):
         self.DRAW_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to draw a keypoint/connection [1]
 
         # --- Gaze source --------------------------------------------------------------
-        # Simulating gaze via the mouse cursor exists only to exercise the pipeline
-        # without the physical Tobii 4C tracker attached. It must stay off by default:
-        # in a real session it would silently produce meaningless statistics (mouse
-        # position mistaken for actual gaze) instead of failing loudly. Flip this to
-        # True only for a deliberate hardware-less test run.
+        # Имитация взгляда с помощью курсора мыши существует только для проверки работы конвейера
+        # без подключенного физического трекера Tobii 4C. По умолчанию она должна быть отключена:
+
+        # в реальной сессии она будет молча выдавать бессмысленную статистику (положение мыши
+        # ошибочно принимается за фактический взгляд), вместо того чтобы громко давать сбой. Переключите это значение на
+        # True только для целенаправленного запуска теста без оборудования.
         self.GAZE_SIMULATION_ENABLED = False
-        # Throttle retries while a real tracker's gaze sample is unavailable (blink,
-        # momentary tracking loss), so a prolonged hardware outage doesn't busy-spin
-        # full-screen captures with zero delay between attempts.
+        # Функция Throttle повторяет попытки, пока недоступен реальный образец взгляда трекера (моргание,
+        # кратковременная потеря отслеживания), чтобы длительный сбой оборудования не приводил к бесконечному циклу обработки.
+        # полноэкранные снимки без задержки между попытками.
         self.GAZE_UNAVAILABLE_RETRY_DELAY_S = 0.5
 
         # --- Video window discovery -------------------------------------------------
-        # How long to wait for the OS-default video player window to appear after
-        # launching the video file, before giving up and falling back to
-        # whole-screen capture.
+        # Сколько времени ждать появления окна видеоплеера по умолчанию в ОС после
+        # запуска видеофайла, прежде чем сдаться и вернуться к
+        # захвату всего экрана.
         self.WINDOW_DETECT_TIMEOUT_S = 15.0
-        self.WINDOW_MIN_SIZE_PX = (200, 150)  # ignore tiny popups/toasts when guessing the player window
+        self.WINDOW_MIN_SIZE_PX = (200, 150)  # Игнорировать маленькие всплывающие окна/уведомления при попытке угадать окно плеера
 
         # --- Saccade / fixation detection --------------------------------------------
-        # A gaze jump is treated as a saccade if it exceeds either threshold.
+        # Скачок взгляда рассматривается как саккада, если он превышает любой из порогов.
         self.SACCADE_MIN_DISTANCE_PX = 80.0
         self.SACCADE_MIN_VELOCITY_PX_S = 600.0
-        # Consecutive samples the gaze must stay on the same new target after a
-        # saccade before we treat it as a confirmed fixation (debounces noisy landings).
+        # Взгляд должен оставаться на одной и той же новой цели в течение ряда последовательных отсчетов
+        # после саккады, прежде чем мы будем считать это подтвержденной фиксацией (фильтрация «дребезга» при неточных наведениях).
         self.FIXATION_CONFIRM_SAMPLES = 2
 
-        # --- Local VLM ("what caught your eye") attention probe ----------------------
+        # --- Local VLM ("что привлекло взгляд") зона внимания ----------------------
         self.VLM_ENABLED = True
-        self.VLM_MODEL_NAME = "muse-glimmer:latest"  # vision-capable model already pulled locally; swap to "llava" once pulled
+        self.VLM_MODEL_NAME = "muse-glimmer:latest"  # Модель с поддержкой зрения уже скачана локально; после загрузки переключитесь на «llava».
         self.VLM_BASE_URL = "http://192.168.1.12:11434/v1"  # Ollama's OpenAI-compatible endpoint
-        self.VLM_API_KEY = "ollama"  # unused by Ollama but required by the OpenAI SDK
+        self.VLM_API_KEY = "ollama"  # не используется Ollama, но требуется для OpenAI SDK
         self.VLM_PROMPT = (
             "This is a cropped frame from a dance video, taken from the region a viewer "
             "just looked at right after a sudden eye movement. In 1-2 short sentences, "
             "describe what is visible in the crop and what about it (motion, color, body "
             "part, contrast, position) could have attracted the viewer's attention."
         )
-        # This local model runs CPU-only on this machine (no GPU acceleration
-        # for Ollama here) - measured ~200s for a single small crop, so the
-        # timeout needs a lot of headroom. The bounded queue (below) is what
-        # actually keeps the capture loop responsive, not a short timeout.
+        # Эта локальная модель на данном компьютере работает только на центральном процессоре
+        # (ускорение силами GPU для Ollama здесь недоступно); обработка одного небольшого
+        # фрагмента занимает около 200 секунд, поэтому для тайм-аута необходим значительный запас. 
+        # Именно очередь с ограничением размера (см. ниже), а не короткий тайм-аут,
+        # обеспечивает отзывчивость цикла захвата данных.
         self.VLM_REQUEST_TIMEOUT_S = 240.0
-        self.VLM_QUEUE_MAXSIZE = 2  # backlog before new probe requests are skipped (and logged as skipped)
-        self.VLM_COOLDOWN_S = 4.0  # minimum time before re-probing the same target label
+        self.VLM_QUEUE_MAXSIZE = 2  # очередь, накапливающаяся до того, как новые запросы probe начнут отбрасываться (и регистрироваться как отброшенные)
+        self.VLM_COOLDOWN_S = 4.0  # минимальное время перед повторной проверкой той же целевой метки
         self.VLM_JPEG_QUALITY = 85
         self.BACKGROUND_CROP_SIZE_PX = 240  # crop size when gaze lands on no detected person
         self.PERSON_CROP_RATIO = 0.4  # crop size (fraction of person box) when gaze is on a person but no specific part
 
         # --- Post-hoc person identity reconciliation ----------------------------------
-        # Pose tracking fragments one real dancer into several track IDs when they're
-        # occluded or leave/re-enter frame. After playback ends, this samples a few
-        # crops per track ID and asks the local VLM to compare each of one ID's crops
-        # against a reference crop of another ID; if a majority say "same person", the
-        # two IDs are merged before final statistics are computed. Only ID pairs where
-        # both IDs received at least one confirmed gaze fixation are compared (an ID
-        # nobody looked at can't skew gaze stats), and IDs that were ever visible in
-        # the same frame are never compared (they can't be the same person).
+        # При отслеживании поз система может разбивать данные об одном танцоре на несколько идентификаторов (ID),
+        # если он оказывается перекрыт другими объектами либо выходит из кадра и возвращается в него. 
+        # После завершения воспроизведения система выбирает несколько фрагментов изображения (кропов)
+        # для каждого ID и запрашивает у локальной мультимодальной языковой модели (VLM) сравнение
+        # кропов одного ID с эталонным кропом другого ID; если большинство результатов указывает
+        # на одного и того же человека, эти ID объединяются перед расчетом итоговой статистики. 
+        # Сравниваются только те пары ID, для которых была зафиксирована хотя бы одна подтвержденная
+        # фиксация взгляда (ID, на который никто не смотрел, не может исказить статистику взгляда),
+        # и никогда не сравниваются ID, одновременно присутствовавшие в одном кадре
+        # (поскольку они не могут принадлежать одному и тому же человеку).
         self.IDENTITY_RECONCILE_ENABLED = True
         self.IDENTITY_RECONCILE_CROPS_PER_PERSON = 3  # sample crops kept per track ID for cross-ID comparison
-        # Fraction of "same person" votes (exclusive) needed to merge. Votes are whole
-        # crops, so the *effective* agreement bar is rounded up by
-        # IDENTITY_RECONCILE_CROPS_PER_PERSON, not exactly this fraction - e.g. at the
-        # current 3 crops, 0.5 actually requires 2/3 (~67%) agreement, not ~50%; it
-        # would be 3/5 (60%) at 5 crops. That effective bar shifts whenever the crop
-        # count changes, even though this threshold value doesn't.
+        # Доля голосов «за одного и того же человека» (исключительная), необходимая для объединения. 
+        # Голоса представляют собой отдельные фрагменты («кропы»), поэтому *фактический*
+        # порог согласия определяется с учетом параметра IDENTITY_RECONCILE_CROPS_PER_PERSON
+        # и не соответствует в точности указанной доле. Например, при текущем значении
+        # в 3 фрагмента доля 0,5 на самом деле требует согласия по 2 из 3 фрагментов
+        # (ок. 67%), а не по 50%; при 5 фрагментах потребовалось бы 3 из 5 (60%). 
+        # Этот фактический порог меняется при изменении количества фрагментов,
+        # даже если само пороговое значение остается неизменным.
         self.IDENTITY_RECONCILE_MAJORITY_THRESHOLD = 0.5
         self.IDENTITY_RECONCILE_PROMPT = (
             "These are two cropped photos from a dance video. The first photo is a "
@@ -86,19 +92,19 @@ class AppConfig(metaclass=Singleton):
             "word first, 'yes' or 'no', then a short reason."
         )
 
-        # --- Post-hoc appearance estimation for every detected person ------------------
-        # A single frame is an unreliable source for these judgments (motion blur, bad
-        # angle, occlusion), so - like identity reconciliation above - this samples a
-        # few crops per track ID while the video plays, then after playback asks the
-        # local VLM to judge each crop independently, per attribute, and takes a
-        # majority vote across those judgments. Every track ID that collected at least
-        # one crop is judged, regardless of whether it ever received a gaze fixation.
+        # --- Постфактумная оценка внешнего вида для каждого обнаруженного человека ------------------
+        # Один кадр является ненадежным источником для этих оценок (размытие в движении, плохой
+        # ракурс, окклюзия), поэтому - как и в случае с согласованием личности выше - это берет
+        # несколько фрагментов для каждого ID трека во время воспроизведения видео, а затем после воспроизведения запрашивает
+        # у локальной VLM оценку каждого фрагмента независимо, по каждому атрибуту, и проводит
+        # голосование большинством голосов по этим оценкам. Оценивается каждый ID трека, который собрал хотя бы
+        # один фрагмент, независимо от того, была ли когда-либо зафиксирована фиксация взгляда.
         self.DEMOGRAPHICS_ENABLED = True
         self.DEMOGRAPHICS_CROPS_PER_PERSON = 2  # sampled crops per person for the majority vote
-        # Fraction of an attribute's non-null votes (exclusive) a category needs to be
-        # reported as that person's value; otherwise the attribute is left unresolved
-        # (None / 'unknown') rather than reporting a bare plurality winner from a
-        # near-tied vote.
+        # Доля ненулевых голосов (строго больше указанного значения), которую должна набрать категория,
+        # чтобы быть зафиксированной как значение для данного лица; в противном случае атрибут
+        # остается неопределенным (None / «неизвестно») — вместо того чтобы присваивать значение,
+        # победившее лишь с минимальным перевесом в ситуации, близкой к равенству голосов.
         self.DEMOGRAPHICS_MAJORITY_THRESHOLD = 0.5
         self.DEMOGRAPHICS_AGE_CATEGORIES = ('child', 'teen', 'young_adult', 'adult', 'senior')
         self.DEMOGRAPHICS_GENDERS = ('male', 'female')
@@ -124,6 +130,43 @@ class AppConfig(metaclass=Singleton):
 
         # --- Output -------------------------------------------------------------------
         self.CSV_OUTPUT_DIR = "output"
+
+        # --- Local database (viewer profiles, session results, video analysis cache) --
+        self.DB_PATH = "data/app_data.sqlite3"
+        # Вычисление данных о позе/траектории движения и демографических характеристиках
+        # человека (возраст, пол, телосложение, доминирующий цвет) — ресурсоемкая
+        # задача: модель YOLO обрабатывает каждый кадр, а выполнение запроса к VLM
+        # занимает минуты. Поэтому после анализа видео его результаты сохраняются
+        # в кэше базы данных и используются повторно при любых последующих
+        # сеансах работы с тем же видеофайлом, независимо от того, какой именно
+        # человек проходит тестирование. Установите значение True, чтобы
+        # игнорировать существующий кэш и всегда выполнять вычисления заново
+        # в реальном времени (при этом новые результаты впоследствии перезапишут
+        # данные в кэше). Это может понадобиться, например, после изменения
+        # YOLO_MODEL_NAME или промпта для определения демографических данных/личности,
+        # когда кэшированные результаты анализа перестают соответствовать
+        # текущим настройкам.
+        self.FORCE_RECOMPUTE_VIDEO_ANALYSIS = False
+
+        # --- Video window content-rect correction / precompute -------------------------
+        # Большинство видеоплееров (включая штатный проигрыватель Windows) вписывают
+        # видео в окно с сохранением пропорций, добавляя чёрные полосы (леттербоксинг/
+        # пилларбоксинг), если пропорции окна не совпадают с пропорциями видео. Если
+        # нормализовать закешированные координаты по всему захваченному кадру окна
+        # (включая эти полосы), они "поплывут" при изменении размера/пропорций окна.
+        # При True (по умолчанию) координаты нормализуются относительно реального
+        # прямоугольника видео внутри окна (video_geometry.letterboxed_content_rect) —
+        # это же делает кеш совместимым между обычным живым просмотром и headless-
+        # предпросчётом (video_precomputer.py), который декодирует файл напрямую.
+        # Установите False, только если ваш плеер по умолчанию растягивает видео без
+        # сохранения пропорций — тогда используется прежнее поведение (координаты
+        # относительно всего окна), но такой кеш уже не будет совместим с предпросчётом.
+        self.PLAYER_PRESERVES_ASPECT_RATIO = True
+
+        # Частота сэмплирования кадров (кадров в секунду видео-времени) при headless-
+        # предпросчёте кеша видео (video_precomputer.py) — выше, чем нерегулярный темп
+        # обычного живого захвата экрана, ради более точного трекинга поз.
+        self.PRECOMPUTE_FPS = 10.0
 
         try:
             import CustomTobii4cTracker
