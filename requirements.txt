@@ -18,6 +18,18 @@ pywin32==311
 # Local VLM ("what caught your eye") queries via Ollama's OpenAI-compatible API
 openai==2.11.0
 
+# Webcam facial-emotion recognition (built-in classifier, no VLM/network call
+# needed). Pulls in TensorFlow/Keras - the emotion model's weights (a few MB)
+# download once on first use and are cached under ~/.deepface/weights.
+# Installing this requires Windows long-path support enabled (deepface's
+# tensorflow dependency has deeply nested internal paths that exceed the
+# default 260-char MAX_PATH) - see https://pip.pypa.io/warnings/enable-long-paths.
+deepface==0.0.100
+# Keras-2 compatibility shim - deepface unconditionally imports its retinaface
+# submodule (even when a different face-detector backend is actually used),
+# which requires this under TensorFlow >=2.16's default Keras 3.
+tf-keras
+
 # Tobii 4C tracker support. Requires the Tobii 4C hardware + drivers to do
 # anything useful; safe to install without them (falls back to simulated
 # mouse-based gaze, see eye_gaze_tracker.py).

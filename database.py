@@ -125,7 +125,14 @@ CREATE TABLE IF NOT EXISTS test_sessions (
     saccade_count INTEGER,
     confirmed_fixation_count INTEGER,
     most_gazed_person INTEGER,
-    most_gazed_part TEXT
+    most_gazed_part TEXT,
+    -- Webcam facial-emotion tracking summary (see emotion_tracker.py) - the
+    -- full per-sample timeline is CSV-only (emotion_timeline.csv), same as
+    -- gaze_events.csv is for raw gaze samples; only the session-level
+    -- aggregate is persisted here.
+    emotion_sample_count INTEGER,
+    dominant_emotion TEXT,
+    emotion_face_detected_ratio REAL
 );
 
 CREATE TABLE IF NOT EXISTS session_person_gaze (
@@ -143,6 +150,34 @@ CREATE TABLE IF NOT EXISTS session_body_part_gaze (
     duration_s REAL NOT NULL,
     ratio REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS session_emotion (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES test_sessions(id) ON DELETE CASCADE,
+    emotion TEXT NOT NULL,
+    duration_s REAL NOT NULL,
+    ratio REAL NOT NULL
+);
+
+-- Full per-sample webcam-emotion timeline (unlike session_emotion above,
+-- which only holds the per-session aggregate). Each row is tied to both the
+-- viewing session and the video, via video_time_s - the same video-relative
+-- time axis video_pose_cache uses - so a later query can pair any emotion
+-- sample with the exact video frame the viewer was watching at that moment
+-- (see video_geometry.read_frame_at and Database.load_emotion_samples).
+CREATE TABLE IF NOT EXISTS session_emotion_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES test_sessions(id) ON DELETE CASCADE,
+    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    sample_seq INTEGER NOT NULL,
+    video_time_s REAL NOT NULL,
+    face_detected INTEGER NOT NULL,
+    dominant_emotion TEXT,
+    emotion_scores_json TEXT NOT NULL,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_emotion_samples_video_time ON session_emotion_samples(video_id, video_time_s);
+CREATE INDEX IF NOT EXISTS idx_emotion_samples_session ON session_emotion_samples(session_id);
 """
 
 # (table, column, type declaration) columns that may be missing on a
@@ -154,6 +189,9 @@ _MIGRATIONS = (
     ("videos", "identity_reconciled", "INTEGER NOT NULL DEFAULT 0"),
     ("test_sessions", "finished_at", "TEXT"),
     ("videos", "pose_cache_format_version", "INTEGER"),
+    ("test_sessions", "emotion_sample_count", "INTEGER"),
+    ("test_sessions", "dominant_emotion", "TEXT"),
+    ("test_sessions", "emotion_face_detected_ratio", "REAL"),
 )
 
 
@@ -448,23 +486,30 @@ class Database:
             return cur.lastrowid
 
     def save_session(self, user_id, video_id, output_dir, pose_cache_used, demographics_cache_used,
-                      stats, started_at_epoch):
+                      stats, started_at_epoch, emotion_stats=None):
         """Records one test session's summary. `started_at_epoch` is the
         time.time() value captured when playback actually began (not when
         this method runs, which is only after the full video played and
-        post-hoc VLM analysis finished). Returns the new session id."""
+        post-hoc VLM analysis finished). `emotion_stats` is
+        EmotionTracker.generate_statistics() output (or None/empty if
+        webcam emotion tracking wasn't used this session). Returns the new
+        session id."""
+        emotion_stats = emotion_stats or {}
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO test_sessions (user_id, video_id, started_at, finished_at, output_dir, "
                 "pose_cache_used, demographics_cache_used, total_frames, total_time_s, total_gaze_time_s, "
-                "saccade_count, confirmed_fixation_count, most_gazed_person, most_gazed_part) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "saccade_count, confirmed_fixation_count, most_gazed_person, most_gazed_part, "
+                "emotion_sample_count, dominant_emotion, emotion_face_detected_ratio) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id, video_id, self._now(started_at_epoch), self._now(), output_dir,
                     int(pose_cache_used), int(demographics_cache_used),
                     stats.get("total_frames"), stats.get("total_time"), stats.get("total_gaze_time"),
                     stats.get("saccade_count"), stats.get("confirmed_fixation_count"),
                     stats.get("most_gazed_person"), stats.get("most_gazed_part"),
+                    emotion_stats.get("sample_count"), emotion_stats.get("dominant_emotion"),
+                    emotion_stats.get("face_detected_ratio"),
                 ),
             )
             self._conn.commit()
@@ -497,3 +542,88 @@ class Database:
                 ],
             )
             self._conn.commit()
+
+    def save_session_emotion(self, session_id, duration_by_emotion, ratio_by_emotion):
+        """Persists this session's webcam-emotion duration breakdown (see
+        EmotionTracker.generate_statistics()'s 'emotion_duration'/
+        'emotion_ratio'). A no-op if emotion tracking recorded nothing this
+        session (disabled, no webcam selected, or no face ever detected)."""
+        duration_by_emotion = {k: v for k, v in (duration_by_emotion or {}).items() if v > 0}
+        if not duration_by_emotion:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO session_emotion (session_id, emotion, duration_s, ratio) VALUES (?, ?, ?, ?)",
+                [
+                    (session_id, emotion, duration, (ratio_by_emotion or {}).get(emotion, 0.0))
+                    for emotion, duration in duration_by_emotion.items()
+                ],
+            )
+            self._conn.commit()
+
+    def save_session_emotion_samples(self, session_id, video_id, records):
+        """Persists the full per-sample webcam-emotion timeline (see
+        EmotionTracker.get_records()) for this session, each row tied to
+        both the session and `video_id`. `record['timestamp']` is stored as
+        video_time_s - see load_emotion_samples for how that's meant to be
+        used. A no-op if emotion tracking recorded no samples this session."""
+        if not records:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO session_emotion_samples "
+                "(session_id, video_id, sample_seq, video_time_s, face_detected, dominant_emotion, "
+                "emotion_scores_json, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        session_id, video_id, r["sample_seq"], r["timestamp"], int(r["face_detected"]),
+                        r["dominant_emotion"], json.dumps(r["emotion_scores"]), r["error"],
+                    )
+                    for r in records
+                ],
+            )
+            self._conn.commit()
+
+    def load_emotion_samples(self, video_id=None, session_id=None):
+        """Returns stored webcam-emotion samples, optionally filtered by
+        video and/or session, ordered by video_time_s, as a list of
+        {id, session_id, video_id, sample_seq, video_time_s, face_detected,
+        dominant_emotion, emotion_scores, error}.
+
+        Each sample's video_time_s is on the same video-relative time axis
+        as video_pose_cache's - together with the matching video's
+        file_path (see get_or_create_video/`videos` table), it's enough to
+        pull out the exact frame the viewer was watching at that moment via
+        video_geometry.read_frame_at(file_path, video_time_s).
+        """
+        query = (
+            "SELECT id, session_id, video_id, sample_seq, video_time_s, face_detected, "
+            "dominant_emotion, emotion_scores_json, error FROM session_emotion_samples"
+        )
+        conditions, params = [], []
+        if video_id is not None:
+            conditions.append("video_id = ?")
+            params.append(video_id)
+        if session_id is not None:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY video_time_s"
+
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "session_id": r["session_id"],
+                "video_id": r["video_id"],
+                "sample_seq": r["sample_seq"],
+                "video_time_s": r["video_time_s"],
+                "face_detected": bool(r["face_detected"]),
+                "dominant_emotion": r["dominant_emotion"],
+                "emotion_scores": json.loads(r["emotion_scores_json"]),
+                "error": r["error"],
+            }
+            for r in rows
+        ]

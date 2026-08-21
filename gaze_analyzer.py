@@ -481,7 +481,7 @@ class GazeAnalyzer:
 
     def save_to_excel(self, filename, vlm_query_log=None, identity_comparison_log=None,
                        demographics=None, demographics_query_log=None, stats=None, viewer_profile=None,
-                       extra_summary_fields=None):
+                       extra_summary_fields=None, emotion_log=None, emotion_stats=None):
         """Saves all possible and interesting statistics to an Excel file -
         the same information save_to_csv() writes as separate CSV files,
         including its one-row summary (here a 'Summary' sheet), so neither
@@ -490,7 +490,10 @@ class GazeAnalyzer:
 
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
-        computed here from `demographics`."""
+        computed here from `demographics`. `emotion_log`/`emotion_stats` are
+        EmotionTracker.get_export_rows()/generate_statistics() output - the
+        webcam facial-emotion timeline, kept separate from `stats` since
+        GazeAnalyzer doesn't compute it itself."""
         if stats is None:
             stats = self.generate_statistics(demographics)
 
@@ -505,7 +508,7 @@ class GazeAnalyzer:
 
         summary_row = self._build_summary_row(
             stats, vlm_query_log, identity_comparison_log, demographics, demographics_query_log,
-            extra_summary_fields,
+            extra_summary_fields, emotion_log, emotion_stats,
         )
 
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
@@ -527,6 +530,13 @@ class GazeAnalyzer:
                         .to_excel(writer, sheet_name=f'Gaze Duration by {label}', index=False)
                     self._group_part_dataframe(stats[f'{attr}_part_gaze_duration'], stats[f'{attr}_part_gaze_ratio'], attr) \
                         .to_excel(writer, sheet_name=f'Body Part Gaze by {label}', index=False)
+
+            if emotion_stats and emotion_stats.get('sample_count'):
+                self._emotion_duration_dataframe(emotion_stats).to_excel(
+                    writer, sheet_name='Emotion Duration', index=False
+                )
+            if emotion_log:
+                pd.DataFrame(emotion_log).to_excel(writer, sheet_name='Emotion Timeline', index=False)
 
         print(f"Statistics saved to Excel file: {filename}")
 
@@ -574,7 +584,7 @@ class GazeAnalyzer:
         return pd.DataFrame(rows, columns=[group_col, 'duration_s', 'ratio'])
 
     def _build_summary_row(self, stats, vlm_query_log, identity_comparison_log, demographics,
-                            demographics_query_log, extra_summary_fields):
+                            demographics_query_log, extra_summary_fields, emotion_log=None, emotion_stats=None):
         """Builds the one-row session summary dict shared by save_to_csv's
         summary.csv and save_to_excel's 'Summary' sheet."""
         summary_row = {
@@ -594,9 +604,27 @@ class GazeAnalyzer:
             summary_row[f'most_gazed_{attr}'] = stats.get(f'most_gazed_{attr}')
         for source, duration in stats['gaze_duration_per_source'].items():
             summary_row[f'time_source_{source}_s'] = duration
+
+        summary_row['emotion_sample_count'] = len(emotion_log) if emotion_log is not None else 0
+        if emotion_stats:
+            summary_row['dominant_emotion'] = emotion_stats.get('dominant_emotion')
+            summary_row['emotion_face_detected_ratio'] = emotion_stats.get('face_detected_ratio')
+            for label, duration in (emotion_stats.get('emotion_duration') or {}).items():
+                summary_row[f'emotion_{label}_s'] = duration
+
         if extra_summary_fields:
             summary_row.update(extra_summary_fields)
         return summary_row
+
+    @staticmethod
+    def _emotion_duration_dataframe(emotion_stats):
+        """Builds the {emotion -> duration/ratio} table shared by the Excel
+        and CSV exports, from EmotionTracker.generate_statistics() output."""
+        rows = [
+            {'emotion': label, 'duration_s': duration, 'ratio': emotion_stats['emotion_ratio'].get(label, 0.0)}
+            for label, duration in (emotion_stats.get('emotion_duration') or {}).items()
+        ]
+        return pd.DataFrame(rows, columns=['emotion', 'duration_s', 'ratio'])
 
     @staticmethod
     def _group_part_dataframe(duration_by_group_part, ratio_by_group_part, group_col):
@@ -617,20 +645,22 @@ class GazeAnalyzer:
 
     def save_to_csv(self, output_dir, vlm_query_log=None, identity_comparison_log=None,
                      demographics=None, demographics_query_log=None, stats=None, viewer_profile=None,
-                     extra_summary_fields=None):
+                     extra_summary_fields=None, emotion_log=None, emotion_stats=None):
         """
         Saves all collected statistics to a set of CSV files for further
         analytics: per-frame gaze events, durations, transitions, the VLM
         attention-probe query log, the identity-reconciliation comparison
         log, the per-person age/gender majority-vote results and their
         underlying per-crop judgments, the viewer's self-reported profile,
-        and a one-row summary.
+        the webcam facial-emotion timeline, and a one-row summary.
 
         Pass a precomputed `stats` (from generate_statistics()) to avoid
         recomputing it when the caller already has one; otherwise it's
         computed here from `demographics`. `extra_summary_fields`, if given,
         is merged into the one-row summary.csv (e.g. whether this run used
-        the video analysis cache - see PoseGazeApplication).
+        the video analysis cache - see PoseGazeApplication). `emotion_log`/
+        `emotion_stats` are EmotionTracker.get_export_rows()/
+        generate_statistics() output.
         """
         os.makedirs(output_dir, exist_ok=True)
         if stats is None:
@@ -687,9 +717,17 @@ class GazeAnalyzer:
                     os.path.join(output_dir, f'body_part_by_{attr}.csv'), index=False
                 )
 
+        if emotion_log is not None:
+            pd.DataFrame(emotion_log).to_csv(os.path.join(output_dir, 'emotion_timeline.csv'), index=False)
+
+        if emotion_stats and emotion_stats.get('sample_count'):
+            self._emotion_duration_dataframe(emotion_stats).to_csv(
+                os.path.join(output_dir, 'emotion_duration.csv'), index=False
+            )
+
         summary_row = self._build_summary_row(
             stats, vlm_query_log, identity_comparison_log, demographics, demographics_query_log,
-            extra_summary_fields,
+            extra_summary_fields, emotion_log, emotion_stats,
         )
         pd.DataFrame([summary_row]).to_csv(os.path.join(output_dir, 'summary.csv'), index=False)
 

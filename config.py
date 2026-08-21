@@ -128,6 +128,28 @@ class AppConfig(metaclass=Singleton):
             "reason on the next line."
         )
 
+        # --- Webcam-based facial emotion tracking --------------------------------------
+        # Записывает эмоции тестируемого зрителя во время просмотра через веб-камеру,
+        # синхронизированные по времени с данными о взгляде (та же временная ось
+        # "секунды с начала сеанса"). В отличие от VLM-модулей выше, здесь используется
+        # готовый специализированный классификатор эмоций лица (DeepFace, работает
+        # локально, без Ollama) - он на порядки быстрее и надёжнее для этой узкой задачи,
+        # чем универсальная VLM, отвечающая словом на промпт.
+        self.EMOTION_TRACKING_ENABLED = True
+        # Индекс камеры (см. webcam.py / стартовое меню -> Настройки -> Веб-камера).
+        # None означает "камера ещё не выбрана" - трекинг эмоций автоматически
+        # отключается до тех пор, пока пользователь её не выберет.
+        self.WEBCAM_INDEX = None
+        # Пауза между запросами к модели распознавания эмоций - анализ одного кадра
+        # занимает заметное время на CPU, а лицо не меняет выражение настолько быстро,
+        # чтобы требовался покадровый анализ каждого захваченного кадра веб-камеры.
+        self.EMOTION_SAMPLE_INTERVAL_S = 0.5
+        # Бэкенд детектора лица DeepFace. 'opencv' (каскады Хаара) уже входит в состав
+        # пакета и не требует скачивания дополнительных весов при первом запуске -
+        # в отличие от 'retinaface'/'mtcnn', которые точнее, но тяжелее и медленнее.
+        self.EMOTION_DETECTOR_BACKEND = 'opencv'
+        self.EMOTION_LABELS = ('angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral')
+
         # --- Output -------------------------------------------------------------------
         self.CSV_OUTPUT_DIR = "output"
 
@@ -198,3 +220,10 @@ class AppConfig(metaclass=Singleton):
             print(f"Warning: local Ollama server not reachable at {self.VLM_BASE_URL} ({e}). "
                   "Attention probing on new gaze targets will be disabled.")
             self.OLLAMA_AVAILABLE = False
+
+        try:
+            import deepface  # Local facial-emotion classifier for the webcam viewer feed
+            self.DEEPFACE_AVAILABLE = True
+        except ImportError:
+            print("Error: deepface library not found. Webcam emotion tracking is unavailable.")
+            self.DEEPFACE_AVAILABLE = False

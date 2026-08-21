@@ -29,6 +29,43 @@ def read_video_metadata(filename):
     return frame_count / fps, int(width), int(height)
 
 
+def read_frame_at(video_path, video_time_s):
+    """
+    Decodes and returns the video frame (BGR numpy array) nearest
+    `video_time_s` seconds into `video_path`, or None if the file can't be
+    opened or has no discoverable frame rate.
+
+    Lets a stored, time-stamped analysis result be turned back into the
+    actual video frame it refers to - e.g. a webcam emotion sample's
+    video_time_s (see Database.load_emotion_samples) or a cached pose
+    sample's video_time_s (see Database.load_pose_cache) - both share this
+    module's video-relative time axis (seconds since playback started, with
+    no seeking/pausing during a live session), so either can be looked up
+    here directly.
+
+    Seeks by frame index (video_time_s * fps) rather than
+    cv2.CAP_PROP_POS_MSEC, which several common codecs seek inaccurately on.
+    Opens and closes its own capture per call - a caller that needs many
+    frames from the same video should decode it directly instead (see
+    video_precomputer.py's _sample_frames) rather than pay this function's
+    per-call open/seek cost repeatedly.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return None
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0
+        if fps <= 0:
+            return None
+        frame_index = max(0, round(video_time_s * fps))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
 def letterboxed_content_rect(capture_w, capture_h, video_w, video_h):
     """
     Returns (x0, y0, w, h): the sub-rectangle of a `capture_w` x `capture_h`

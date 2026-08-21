@@ -16,6 +16,7 @@ from eye_gaze_tracker import EyeGazeTracker, GazeUnavailableError
 from vlm_attention_probe import VlmAttentionProbe
 from identity_reconciler import PersonIdentityReconciler
 from demographics_estimator import PersonDemographicsEstimator
+from emotion_tracker import EmotionTracker
 from video_window import VideoPlayerWindow, WindowNotFoundError
 from video_geometry import read_video_metadata, letterboxed_content_rect
 from javelin_thrower import JavelinThrower
@@ -85,6 +86,7 @@ class PoseGazeApplication:
         self.vlm_probe = VlmAttentionProbe()
         self.identity_reconciler = PersonIdentityReconciler()
         self.demographics_estimator = PersonDemographicsEstimator()
+        self.emotion_tracker = EmotionTracker()
         # A shared Database (see StartMenu, which owns and closes one for
         # the whole program) avoids reopening a connection and re-running
         # schema setup for every video in a playlist. Falls back to owning
@@ -232,6 +234,7 @@ class PoseGazeApplication:
             start_time = time.time()
             self._session_start_epoch = start_time
             last_time = start_time
+            self.emotion_tracker.start(start_time)
 
             while (time.time() - start_time) < video_duration:
                 try:
@@ -470,7 +473,7 @@ class PoseGazeApplication:
             print("Playback stopped early - not caching demographics from a partial session.")
         return demographics
 
-    def _save_session_to_db(self, output_dir, stats):
+    def _save_session_to_db(self, output_dir, stats, emotion_stats):
         user_id = self.db.get_or_create_user(self.viewer_profile)
         session_id = self.db.save_session(
             user_id=user_id,
@@ -479,22 +482,29 @@ class PoseGazeApplication:
             pose_cache_used=self._pose_cache_hit,
             demographics_cache_used=self._demographics_cache_hit,
             stats=stats,
+            emotion_stats=emotion_stats,
             started_at_epoch=self._session_start_epoch,
         )
         self.db.save_session_person_gaze(session_id, stats['person_gaze_duration'], stats['person_gaze_ratio'])
         self.db.save_session_body_part_gaze(session_id, stats['part_gaze_duration'], stats['part_gaze_ratio'])
+        self.db.save_session_emotion(session_id, emotion_stats['emotion_duration'], emotion_stats['emotion_ratio'])
+        self.db.save_session_emotion_samples(session_id, self.video_id, self.emotion_tracker.get_records())
         print(f"Session results saved to local database (session id {session_id}).")
 
     def _finalize(self):
         try:
             print("Waiting for pending VLM attention-probe queries to finish...")
             self.vlm_probe.stop()
+            self.emotion_tracker.stop()
 
             id_map = self._reconcile_identities()
             demographics = self._resolve_demographics(id_map)
 
             stats = self.gaze_analyzer.generate_statistics(demographics)
             self.gaze_analyzer.display_statistics(stats, demographics=demographics)
+
+            emotion_stats = self.emotion_tracker.generate_statistics()
+            self.emotion_tracker.display_statistics(emotion_stats)
 
             run_id = time.strftime("%Y%m%d_%H%M%S")
             output_dir = os.path.join(app_config.CSV_OUTPUT_DIR, run_id)
@@ -514,6 +524,8 @@ class PoseGazeApplication:
                     stats=stats,
                     viewer_profile=self.viewer_profile,
                     extra_summary_fields=extra_summary_fields,
+                    emotion_log=self.emotion_tracker.get_export_rows(),
+                    emotion_stats=emotion_stats,
                 )
                 self.gaze_analyzer.save_to_excel(
                     os.path.join(output_dir, "gaze_statistics.xlsx"),
@@ -524,12 +536,14 @@ class PoseGazeApplication:
                     stats=stats,
                     viewer_profile=self.viewer_profile,
                     extra_summary_fields=extra_summary_fields,
+                    emotion_log=self.emotion_tracker.get_export_rows(),
+                    emotion_stats=emotion_stats,
                 )
             except Exception as e:
                 print(f"Warning: failed to write CSV/Excel output files: {e}")
 
             try:
-                self._save_session_to_db(output_dir, stats)
+                self._save_session_to_db(output_dir, stats, emotion_stats)
             except Exception as e:
                 print(f"Warning: failed to save session results to the database: {e}")
         finally:

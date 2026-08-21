@@ -12,6 +12,7 @@ import os
 
 import tui
 import file_dialogs
+import webcam
 from config import AppConfig
 from database import Database
 from viewer_profile import collect_viewer_profile, display_profile, PROFILE_FIELDS
@@ -27,6 +28,7 @@ SETTINGS_TOGGLES = (
     ("VLM_ENABLED", "VLM-анализ 'что привлекло взгляд'"),
     ("IDENTITY_RECONCILE_ENABLED", "Сверка личностей после просмотра"),
     ("DEMOGRAPHICS_ENABLED", "Оценка возраста/пола/телосложения"),
+    ("EMOTION_TRACKING_ENABLED", "Трекинг эмоций через веб-камеру"),
     ("FORCE_RECOMPUTE_VIDEO_ANALYSIS", "Игнорировать кеш БД (пересчитывать анализ видео заново)"),
 )
 
@@ -183,6 +185,12 @@ class StartMenu:
             if answer is True:
                 self._profile_menu()
 
+        if self.app_config.EMOTION_TRACKING_ENABLED and self.app_config.WEBCAM_INDEX is None:
+            print("\nТрекинг эмоций через веб-камеру включён, но камера ещё не выбрана.")
+            answer = tui.confirm("Выбрать веб-камеру сейчас?", default=True)
+            if answer is True:
+                self._select_webcam()
+
         for i, video_path in enumerate(video_paths, start=1):
             print(f"\n[{i}/{len(video_paths)}] Видео: {video_path}")
             decision = tui.select_menu(
@@ -301,11 +309,59 @@ class StartMenu:
                 (f"[{'Вкл' if getattr(self.app_config, attr) else 'Выкл'}] {label}", attr)
                 for attr, label in SETTINGS_TOGGLES
             ]
+            items.append((f"Веб-камера (сейчас: {self._webcam_label()})", "webcam"))
+            items.append(("Просмотр камеры и её настройки (баланс белого, яркость...)", "preview_webcam"))
             items.append(("Назад", "back"))
 
             choice = tui.select_menu("Настройки", items, show_result=False)
             if choice in (tui.CANCELLED, "back"):
                 return
+            if choice == "webcam":
+                self._select_webcam()
+                continue
+            if choice == "preview_webcam":
+                self._preview_webcam()
+                continue
 
             new_value = not getattr(self.app_config, choice)
             setattr(self.app_config, choice, new_value)
+
+    def _webcam_label(self):
+        index = self.app_config.WEBCAM_INDEX
+        return f"#{index}" if index is not None else "не выбрана"
+
+    def _preview_webcam(self):
+        index = self.app_config.WEBCAM_INDEX
+        if index is None:
+            print("\nСначала нужно выбрать веб-камеру.")
+            self._select_webcam()
+            index = self.app_config.WEBCAM_INDEX
+            if index is None:
+                return
+
+        print(f"\nОткрывается окно предпросмотра камеры #{index}.")
+        print("В окне предпросмотра: Esc/Q - закрыть, S - открыть настройки камеры "
+              "(баланс белого, яркость, экспозиция и т.п. - если камера их поддерживает).")
+
+        if not webcam.preview_camera(index):
+            print(f"Не удалось открыть камеру #{index}.")
+
+    def _select_webcam(self):
+        print("\nПоиск подключённых веб-камер...")
+        cameras = webcam.list_available_cameras()
+        if not cameras:
+            print("Веб-камеры не найдены.")
+
+        items = [
+            (f"Камера #{cam['index']} ({cam['width']}x{cam['height']})", cam['index'])
+            for cam in cameras
+        ]
+        items.append(("Не использовать веб-камеру (отключить трекинг эмоций)", "none"))
+        items.append(("Назад", "back"))
+
+        choice = tui.select_menu("Выберите веб-камеру", items, show_result=False)
+        if choice in (tui.CANCELLED, "back"):
+            return
+
+        self.app_config.WEBCAM_INDEX = None if choice == "none" else choice
+        print(f"Веб-камера установлена: {self._webcam_label()}")
